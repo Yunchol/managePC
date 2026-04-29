@@ -1,15 +1,23 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	qrcode "github.com/skip2/go-qrcode"
 )
+
+// ui/index.html をバイナリに埋め込む（配布時に別ファイル不要）
+//
+//go:embed ui/index.html
+var indexHTML []byte
 
 // ── メッセージ形式 ──────────────────────────────────────────
 // サーバー → エージェント
@@ -45,12 +53,20 @@ func (c *Client) send(msg Message) error {
 	return c.conn.WriteMessage(websocket.TextMessage, data)
 }
 
+// timerRecord はタイマーの開始情報を記録する
+// 再接続時に「残り時間 = 合計 - 経過時間」で復元するために使う
+type timerRecord struct {
+	startedAt time.Time // タイマーを開始した時刻
+	total     int       // 合計秒数
+}
+
 // ── Hub ──────────────────────────────────────────────────────
 type Hub struct {
 	mu        sync.Mutex
 	clients   map[string]*Client
-	paused    map[string]int  // 一時停止中の PC → 残り秒数
-	blocked   map[string]bool // ブロック中の PC → true（再接続時にも復元される）
+	paused    map[string]int        // 一時停止中の PC → 残り秒数
+	blocked   map[string]bool       // ブロック中の PC → true（再接続時にも復元される）
+	timers    map[string]*timerRecord // 稼働中タイマーの記録（再接続時の復元用）
 	lastReset time.Time
 }
 
@@ -59,6 +75,7 @@ func newHub() *Hub {
 		clients:   make(map[string]*Client),
 		paused:    make(map[string]int),
 		blocked:   make(map[string]bool),
+		timers:    make(map[string]*timerRecord),
 		lastReset: time.Now(),
 	}
 }
@@ -117,11 +134,28 @@ func (h *Hub) wsHandler(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	// 再接続時にブロック状態を復元する
-	// （子どもが PC を再起動してもブロックが継続される）
 	h.mu.Lock()
 	wasBlocked := h.blocked[pcName]
+	timer := h.timers[pcName]
 	h.mu.Unlock()
+
+	// 再接続時: 稼働中タイマーがあれば残り時間を計算して自動再開
+	if timer != nil {
+		elapsed := int(time.Since(timer.startedAt).Seconds())
+		remaining := timer.total - elapsed
+		if remaining > 0 {
+			client.send(Message{Type: "start", Seconds: remaining})
+			log.Printf("[%s] 再接続 → タイマー継続: 残り %d 秒", pcName, remaining)
+		} else {
+			// タイマーが切れていた → 終了扱い
+			h.mu.Lock()
+			delete(h.timers, pcName)
+			h.mu.Unlock()
+			log.Printf("[%s] 再接続 → タイマー切れ（切断中に終了）", pcName)
+		}
+	}
+
+	// 再接続時: ブロック状態を復元（子どもが再起動してもブロック継続）
 	if wasBlocked {
 		client.send(Message{Type: "block"})
 		log.Printf("[%s] 再接続 → ブロック状態を復元", pcName)
@@ -148,6 +182,7 @@ func (h *Hub) wsHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[%s] タイマー終了", pcName)
 			h.mu.Lock()
 			delete(h.paused, pcName)
+			delete(h.timers, pcName) // タイマー記録も削除
 			client.remaining = 0
 			h.mu.Unlock()
 
@@ -155,6 +190,7 @@ func (h *Hub) wsHandler(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[%s] 一時停止: 残り %d 秒", pcName, m.Remaining)
 			h.mu.Lock()
 			h.paused[pcName] = m.Remaining
+			delete(h.timers, pcName) // 一時停止中はタイマー記録を消す（再開時に新たに記録）
 			client.remaining = 0
 			h.mu.Unlock()
 		}
@@ -182,10 +218,15 @@ func (h *Hub) handleStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "PC が接続されていません", 404)
 		return
 	}
-	if err := client.send(Message{Type: "start", Seconds: req.Minutes * 60}); err != nil {
+	seconds := req.Minutes * 60
+	if err := client.send(Message{Type: "start", Seconds: seconds}); err != nil {
 		http.Error(w, "送信失敗", 500)
 		return
 	}
+	// タイマー記録を保存（再接続時の自動復元に使う）
+	h.mu.Lock()
+	h.timers[req.PC] = &timerRecord{startedAt: time.Now(), total: seconds}
+	h.mu.Unlock()
 	log.Printf("[%s] タイマー開始: %d 分", req.PC, req.Minutes)
 	fmt.Fprintln(w, "OK")
 }
@@ -239,6 +280,8 @@ func (h *Hub) handleResume(w http.ResponseWriter, r *http.Request) {
 	client.send(Message{Type: "resume", Seconds: remaining})
 	h.mu.Lock()
 	delete(h.paused, req.PC)
+	// 再開時のタイマー記録を新たに保存（再接続時に継続できるよう）
+	h.timers[req.PC] = &timerRecord{startedAt: time.Now(), total: remaining}
 	h.mu.Unlock()
 
 	log.Printf("[%s] タイマー再開: 残り %d 秒", req.PC, remaining)
@@ -351,22 +394,63 @@ func (h *Hub) handleStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(status)
 }
 
+// ── LAN IP 検出 ───────────────────────────────────────────────
+// スタッフPCの LAN 上の IP アドレスを自動で取得する
+func getLANIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "localhost"
+	}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				return ip4.String()
+			}
+		}
+	}
+	return "localhost"
+}
+
 // ── main ─────────────────────────────────────────────────────
 func main() {
 	hub := newHub()
+	ip := getLANIP()
+	serverURL := fmt.Sprintf("http://%s:8080", ip)
 
+	// WebSocket（エージェント用）
 	http.HandleFunc("/ws", hub.wsHandler)
+
+	// タイマー API
 	http.HandleFunc("/api/timer/start", hub.handleStart)
 	http.HandleFunc("/api/timer/pause", hub.handlePause)
 	http.HandleFunc("/api/timer/resume", hub.handleResume)
+
+	// ブロック API
 	http.HandleFunc("/api/block/start", hub.handleBlockStart)
 	http.HandleFunc("/api/block/stop", hub.handleBlockStop)
+
+	// ステータス API
 	http.HandleFunc("/api/status", hub.handleStatus)
+
+	// QR コード画像を返す（スタッフのスマホが読むとこのページに飛ぶ）
+	http.HandleFunc("/qr", func(w http.ResponseWriter, r *http.Request) {
+		png, err := qrcode.Encode(serverURL, qrcode.Medium, 256)
+		if err != nil {
+			http.Error(w, "QR 生成失敗", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(png)
+	})
+
+	// スタッフ管理画面（HTML を配信）
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "管理サーバー 稼働中")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(indexHTML)
 	})
 
 	addr := ":8080"
-	log.Println("サーバー起動:", addr)
+	log.Printf("サーバー起動: %s", serverURL)
+	log.Println("スタッフはこの URL にアクセス →", serverURL)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
