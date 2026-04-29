@@ -3,7 +3,10 @@
     "allow": [
       "Bash(curl -s -X POST http://localhost:8080/api/timer/start -H 'Content-Type: application/json' -d '{\"pc\":\"pc-1\",\"minutes\":1}')",
       "Bash(curl -s http://localhost:8080/api/status)",
-      "Read(//private/tmp/**)"
+      "Read(//private/tmp/**)",
+      "Bash(pkill -f \"go run main.go\")",
+      "Bash(lsof -ti:8080)",
+      "Bash(xargs kill *)"
     ]
   }
 }

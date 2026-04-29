@@ -13,31 +13,31 @@ import (
 
 // ── メッセージ形式 ──────────────────────────────────────────
 // サーバー → エージェント
-//   {"type":"start",  "seconds":1800}   タイマー開始
+//   {"type":"start",   "seconds":1800}  タイマー開始
 //   {"type":"pause"}                    一時停止
-//   {"type":"resume", "seconds":950}    再開（残り秒数を指定）
+//   {"type":"resume",  "seconds":950}   再開
+//   {"type":"block"}                    ブロックモード開始
+//   {"type":"unblock"}                  ブロックモード解除
 //
 // エージェント → サーバー
-//   {"type":"tick",   "remaining":1799} 毎秒の残り時間報告
-//   {"type":"paused", "remaining":950}  一時停止完了の報告
-//   {"type":"done"}                     タイマー終了の報告
+//   {"type":"tick",    "remaining":1799} 毎秒の残り時間報告
+//   {"type":"paused",  "remaining":950}  一時停止完了
+//   {"type":"done"}                      タイマー終了
 
 type Message struct {
 	Type      string `json:"type"`
-	Seconds   int    `json:"seconds,omitempty"`   // サーバー→エージェント用
-	Remaining int    `json:"remaining,omitempty"` // エージェント→サーバー用
+	Seconds   int    `json:"seconds,omitempty"`
+	Remaining int    `json:"remaining,omitempty"`
 }
 
 // ── Client ──────────────────────────────────────────────────
-// 子どもPC 1台分の接続情報
 type Client struct {
 	name      string
 	conn      *websocket.Conn
-	mu        sync.Mutex // WriteMessage を複数 goroutine から安全に呼ぶための鍵
-	remaining int        // 現在の残り秒数（tick で更新される）
+	mu        sync.Mutex
+	remaining int
 }
 
-// send はスレッドセーフに WebSocket へメッセージを送る
 func (c *Client) send(msg Message) error {
 	data, _ := json.Marshal(msg)
 	c.mu.Lock()
@@ -46,30 +46,28 @@ func (c *Client) send(msg Message) error {
 }
 
 // ── Hub ──────────────────────────────────────────────────────
-// 全 PC の接続・一時停止データを管理する中心部
 type Hub struct {
 	mu        sync.Mutex
-	clients   map[string]*Client // 接続中の PC
-	paused    map[string]int     // 一時停止中の PC → 残り秒数
-	lastReset time.Time          // 最後にリセットした日付（0時リセット判定に使う）
+	clients   map[string]*Client
+	paused    map[string]int  // 一時停止中の PC → 残り秒数
+	blocked   map[string]bool // ブロック中の PC → true（再接続時にも復元される）
+	lastReset time.Time
 }
 
 func newHub() *Hub {
 	return &Hub{
 		clients:   make(map[string]*Client),
 		paused:    make(map[string]int),
+		blocked:   make(map[string]bool),
 		lastReset: time.Now(),
 	}
 }
 
-// checkAndReset は日付が変わっていたら一時停止データをリセットする
-// スタッフが画面を開くたびに呼ぶ（0時以降に画面を開いた瞬間にリセット）
 func (h *Hub) checkAndReset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	now := time.Now()
-	// 日付（年・月・日）が変わっていたらリセット
 	lastY, lastM, lastD := h.lastReset.Date()
 	nowY, nowM, nowD := now.Date()
 	if nowY != lastY || nowM != lastM || nowD != lastD {
@@ -105,7 +103,6 @@ func (h *Hub) wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 最初のメッセージで PC 名を受け取る
 	_, msg, err := conn.ReadMessage()
 	if err != nil {
 		conn.Close()
@@ -120,7 +117,16 @@ func (h *Hub) wsHandler(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 	}()
 
-	// エージェントからのメッセージを受け取るループ
+	// 再接続時にブロック状態を復元する
+	// （子どもが PC を再起動してもブロックが継続される）
+	h.mu.Lock()
+	wasBlocked := h.blocked[pcName]
+	h.mu.Unlock()
+	if wasBlocked {
+		client.send(Message{Type: "block"})
+		log.Printf("[%s] 再接続 → ブロック状態を復元", pcName)
+	}
+
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
@@ -134,13 +140,11 @@ func (h *Hub) wsHandler(w http.ResponseWriter, r *http.Request) {
 
 		switch m.Type {
 		case "tick":
-			// エージェントからの毎秒報告 → クライアントの残り時間を更新
 			h.mu.Lock()
 			client.remaining = m.Remaining
 			h.mu.Unlock()
 
 		case "done":
-			// タイマー終了 → 一時停止データを消す
 			log.Printf("[%s] タイマー終了", pcName)
 			h.mu.Lock()
 			delete(h.paused, pcName)
@@ -148,7 +152,6 @@ func (h *Hub) wsHandler(w http.ResponseWriter, r *http.Request) {
 			h.mu.Unlock()
 
 		case "paused":
-			// 一時停止完了 → 残り時間を保存
 			log.Printf("[%s] 一時停止: 残り %d 秒", pcName, m.Remaining)
 			h.mu.Lock()
 			h.paused[pcName] = m.Remaining
@@ -179,7 +182,6 @@ func (h *Hub) handleStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "PC が接続されていません", 404)
 		return
 	}
-
 	if err := client.send(Message{Type: "start", Seconds: req.Minutes * 60}); err != nil {
 		http.Error(w, "送信失敗", 500)
 		return
@@ -206,7 +208,6 @@ func (h *Hub) handlePause(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "PC が接続されていません", 404)
 		return
 	}
-
 	client.send(Message{Type: "pause"})
 	fmt.Fprintln(w, "OK")
 }
@@ -236,18 +237,64 @@ func (h *Hub) handleResume(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client.send(Message{Type: "resume", Seconds: remaining})
-
 	h.mu.Lock()
-	delete(h.paused, req.PC) // 保存データを消す（再開したので）
+	delete(h.paused, req.PC)
 	h.mu.Unlock()
 
 	log.Printf("[%s] タイマー再開: 残り %d 秒", req.PC, remaining)
 	fmt.Fprintln(w, "OK")
 }
 
+// POST /api/block/start  {"pc":"pc-1"}
+func (h *Hub) handleBlockStart(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PC string `json:"pc"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "リクエスト形式が不正です", 400)
+		return
+	}
+
+	h.mu.Lock()
+	client, ok := h.clients[req.PC]
+	h.blocked[req.PC] = true // 再接続時も復元されるように保存
+	h.mu.Unlock()
+
+	if !ok {
+		// PC が未接続でもブロック状態は保存する（繋がったとき自動で適用される）
+		fmt.Fprintln(w, "OK（PC 未接続のためブロック状態を保存しました）")
+		return
+	}
+	client.send(Message{Type: "block"})
+	log.Printf("[%s] ブロック開始", req.PC)
+	fmt.Fprintln(w, "OK")
+}
+
+// POST /api/block/stop  {"pc":"pc-1"}
+func (h *Hub) handleBlockStop(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PC string `json:"pc"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "リクエスト形式が不正です", 400)
+		return
+	}
+
+	h.mu.Lock()
+	client, ok := h.clients[req.PC]
+	delete(h.blocked, req.PC) // ブロック状態を解除
+	h.mu.Unlock()
+
+	if ok {
+		client.send(Message{Type: "unblock"})
+	}
+	log.Printf("[%s] ブロック解除", req.PC)
+	fmt.Fprintln(w, "OK")
+}
+
 // GET /api/status  → 全 PC の状態を返す
 func (h *Hub) handleStatus(w http.ResponseWriter, r *http.Request) {
-	h.checkAndReset() // 日付変更チェック（画面を開くたびに呼ばれる）
+	h.checkAndReset()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -255,14 +302,14 @@ func (h *Hub) handleStatus(w http.ResponseWriter, r *http.Request) {
 	type PCStatus struct {
 		Name      string `json:"name"`
 		Connected bool   `json:"connected"`
-		Remaining int    `json:"remaining"` // カウント中の残り秒数
+		Remaining int    `json:"remaining"`
 		Paused    bool   `json:"paused"`
-		PausedAt  int    `json:"pausedAt"` // 一時停止時の残り秒数
+		PausedAt  int    `json:"pausedAt"`
+		Blocked   bool   `json:"blocked"`
 	}
 
 	status := []PCStatus{}
 
-	// 接続中の PC
 	for name, c := range h.clients {
 		pausedAt, paused := h.paused[name]
 		status = append(status, PCStatus{
@@ -271,16 +318,31 @@ func (h *Hub) handleStatus(w http.ResponseWriter, r *http.Request) {
 			Remaining: c.remaining,
 			Paused:    paused,
 			PausedAt:  pausedAt,
+			Blocked:   h.blocked[name],
 		})
 	}
 
-	// 一時停止中だが今は切断している PC
+	// 接続していないが一時停止中 or ブロック中の PC も表示
+	seen := make(map[string]bool)
+	for _, s := range status {
+		seen[s.Name] = true
+	}
 	for name, pausedAt := range h.paused {
-		if _, connected := h.clients[name]; !connected {
+		if !seen[name] {
 			status = append(status, PCStatus{
 				Name:     name,
-				Paused:   true,
 				PausedAt: pausedAt,
+				Paused:   true,
+				Blocked:  h.blocked[name],
+			})
+			seen[name] = true
+		}
+	}
+	for name := range h.blocked {
+		if !seen[name] {
+			status = append(status, PCStatus{
+				Name:    name,
+				Blocked: true,
 			})
 		}
 	}
@@ -297,6 +359,8 @@ func main() {
 	http.HandleFunc("/api/timer/start", hub.handleStart)
 	http.HandleFunc("/api/timer/pause", hub.handlePause)
 	http.HandleFunc("/api/timer/resume", hub.handleResume)
+	http.HandleFunc("/api/block/start", hub.handleBlockStart)
+	http.HandleFunc("/api/block/stop", hub.handleBlockStop)
 	http.HandleFunc("/api/status", hub.handleStatus)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "管理サーバー 稼働中")
