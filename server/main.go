@@ -288,6 +288,31 @@ func (h *Hub) handleResume(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "OK")
 }
 
+// POST /api/timer/reset  {"pc":"pc-1"}
+func (h *Hub) handleReset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PC string `json:"pc"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "リクエスト形式が不正です", 400)
+		return
+	}
+	h.mu.Lock()
+	client, ok := h.clients[req.PC]
+	delete(h.paused, req.PC)
+	delete(h.timers, req.PC)
+	if ok {
+		client.remaining = 0
+	}
+	h.mu.Unlock()
+
+	if ok {
+		client.send(Message{Type: "stop"})
+	}
+	log.Printf("[%s] リセット", req.PC)
+	fmt.Fprintln(w, "OK")
+}
+
 // POST /api/block/start  {"pc":"pc-1"}
 func (h *Hub) handleBlockStart(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -428,6 +453,9 @@ func main() {
 	// ブロック API
 	http.HandleFunc("/api/block/start", hub.handleBlockStart)
 	http.HandleFunc("/api/block/stop", hub.handleBlockStop)
+
+	// リセット API
+	http.HandleFunc("/api/timer/reset", hub.handleReset)
 
 	// ステータス API
 	http.HandleFunc("/api/status", hub.handleStatus)

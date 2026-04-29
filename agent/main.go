@@ -13,8 +13,17 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const serverURL = "ws://localhost:8080/ws"
 const defaultPCName = "pc-1"
+const defaultServerURL = "ws://localhost:8080/ws"
+
+// getServerURL は環境変数 SERVER_URL があればそれを使う
+// なければデフォルト値（インストール時に設定される）
+func getServerURL() string {
+	if url := os.Getenv("SERVER_URL"); url != "" {
+		return url
+	}
+	return defaultServerURL
+}
 
 // ── メッセージ形式 ────────────────────────────────────────────
 type Message struct {
@@ -47,15 +56,15 @@ func main() {
 	log.Printf("エージェント起動: %s", name)
 
 	for {
-		if err := connect(name); err != nil {
+		if err := connect(name, getServerURL()); err != nil {
 			log.Println("接続失敗、5秒後に再試行:", err)
 		}
 		time.Sleep(5 * time.Second)
 	}
 }
 
-func connect(pcName string) error {
-	log.Println("サーバーに接続中...")
+func connect(pcName string, serverURL string) error {
+	log.Println("サーバーに接続中...", serverURL)
 	conn, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
 	if err != nil {
 		return err
@@ -103,6 +112,11 @@ func connect(pcName string) error {
 		case "resume":
 			log.Printf("タイマー再開: 残り %d 秒", msg.Seconds)
 			startTimer(msg.Seconds, send)
+
+		case "stop":
+			// タイマーをリセット（ブロックはそのまま）
+			log.Println("タイマーリセット")
+			stopTimer()
 
 		case "block":
 			// ブロックモード開始（PC ごとにサーバーから指示が来る）

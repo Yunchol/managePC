@@ -6,7 +6,12 @@
       "Read(//private/tmp/**)",
       "Bash(pkill -f \"go run main.go\")",
       "Bash(lsof -ti:8080)",
-      "Bash(xargs kill *)"
+      "Bash(xargs kill *)",
+      "Bash(PC_NAME=pc-1 go run main.go)",
+      "Bash(PC_NAME=pc-2 go run main.go)",
+      "Bash(PC_NAME=pc-3 go run main.go)",
+      "Bash(python3 -c \"import sys,json; [print\\(p['name'],p['connected']\\) for p in json.load\\(sys.stdin\\)]\")",
+      "Bash(python3 -c \"import sys,json;[print\\(p['name']\\) for p in json.load\\(sys.stdin\\)]\")"
     ]
   }
 }
