@@ -1,15 +1,10 @@
-# 学童エージェント インストールスクリプト
-# 使い方:
-#   1. このスクリプトと agent.exe を同じフォルダに置く
-#   2. 下の「設定」欄を各 PC に合わせて変更する
-#   3. PowerShell を右クリック →「管理者として実行」→ このファイルをドラッグ＆ドロップ → Enter
+# Agent install script (for children's PCs)
+# Edit the two lines below before running
 
-# ════════════════════════════════════════
-#  設定（PC ごとに変える）
-# ════════════════════════════════════════
-$PC_NAME   = "pc-1"                   # この PC の名前（pc-1 〜 pc-6）
-$SERVER_IP = "192.168.0.110"          # スタッフPCの固定IP（実際のIPに変える）
-# ════════════════════════════════════════
+# ===== SETTINGS (change per PC) =====
+$PC_NAME   = "pc-1"          # PC name: pc-1, pc-2, pc-3 ...
+$SERVER_IP = "192.168.0.110" # Staff PC's IP address
+# ====================================
 
 $SERVER_URL  = "ws://${SERVER_IP}:8080/ws"
 $INSTALL_DIR = "C:\gakudo"
@@ -18,30 +13,30 @@ $TASK_NAME   = "GakudoAgent"
 $EXE_SRC     = Join-Path $PSScriptRoot $EXE_NAME
 $EXE_DEST    = Join-Path $INSTALL_DIR  $EXE_NAME
 
-Write-Host "=== 学童エージェント インストール ===" -ForegroundColor Cyan
-Write-Host "PC 名:       $PC_NAME"
-Write-Host "サーバーURL: $SERVER_URL"
+Write-Host "=== Installing Agent ===" -ForegroundColor Cyan
+Write-Host "PC Name:    $PC_NAME"
+Write-Host "Server URL: $SERVER_URL"
 Write-Host ""
 
-# ① インストール先フォルダを作る
+# 1. Create install folder and copy exe
 if (-not (Test-Path $INSTALL_DIR)) {
     New-Item -ItemType Directory -Path $INSTALL_DIR | Out-Null
 }
 Copy-Item -Path $EXE_SRC -Destination $EXE_DEST -Force
-Write-Host "① agent.exe をコピーしました → $EXE_DEST"
+Write-Host "1. Copied agent.exe to $EXE_DEST"
 
-# ② システム環境変数を設定する（再起動後も有効）
+# 2. Set system environment variables (persist after reboot)
 [System.Environment]::SetEnvironmentVariable("PC_NAME",    $PC_NAME,   "Machine")
 [System.Environment]::SetEnvironmentVariable("SERVER_URL", $SERVER_URL, "Machine")
-Write-Host "② 環境変数を設定しました（PC_NAME=$PC_NAME）"
+Write-Host "2. Set environment variables (PC_NAME=$PC_NAME)"
 
-# ③ 既存タスクがあれば削除
+# 3. Remove existing task
 if (Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TASK_NAME -Confirm:$false
-    Write-Host "③ 既存タスクを削除しました"
+    Write-Host "3. Removed existing task"
 }
 
-# ④ タスクスケジューラに登録（ログイン時に自動起動・非表示）
+# 4. Register in Task Scheduler (auto-start at logon, hidden)
 $action    = New-ScheduledTaskAction -Execute $EXE_DEST
 $trigger   = New-ScheduledTaskTrigger -AtLogOn
 $settings  = New-ScheduledTaskSettingsSet -Hidden $true -ExecutionTimeLimit 0
@@ -55,13 +50,12 @@ Register-ScheduledTask `
     -Principal $principal `
     -Force | Out-Null
 
-Write-Host "④ タスクスケジューラに登録しました（ログイン時に自動起動）"
+Write-Host "4. Registered in Task Scheduler (auto-start at logon)"
 
-# ⑤ 今すぐ起動
+# 5. Start now
 Start-ScheduledTask -TaskName $TASK_NAME
-Write-Host "⑤ エージェントを起動しました"
+Write-Host "5. Agent started"
 
 Write-Host ""
-Write-Host "=== インストール完了！ ===" -ForegroundColor Green
-Write-Host "PC を再起動するとログイン後に自動で起動します。"
-Write-Host "タスクマネージャーの「詳細」タブで agent.exe が動いているか確認できます。"
+Write-Host "=== Install complete! ===" -ForegroundColor Green
+Write-Host "Check Task Manager > Details tab to confirm agent.exe is running."

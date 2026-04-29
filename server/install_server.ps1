@@ -1,7 +1,4 @@
-# 学童サーバー インストールスクリプト（スタッフPC用）
-# 使い方:
-#   1. このスクリプトと server.exe を同じフォルダに置く
-#   2. PowerShell を右クリック →「管理者として実行」→ このファイルをドラッグ＆ドロップ
+# Server install script (for staff PC)
 
 $INSTALL_DIR = "C:\gakudo_server"
 $EXE_NAME    = "server.exe"
@@ -9,21 +6,21 @@ $TASK_NAME   = "GakudoServer"
 $EXE_SRC     = Join-Path $PSScriptRoot $EXE_NAME
 $EXE_DEST    = Join-Path $INSTALL_DIR  $EXE_NAME
 
-Write-Host "=== 学童サーバー インストール ===" -ForegroundColor Cyan
+Write-Host "=== Installing Server ===" -ForegroundColor Cyan
 
-# ① フォルダ作成 & コピー
+# 1. Create folder and copy exe
 if (-not (Test-Path $INSTALL_DIR)) {
     New-Item -ItemType Directory -Path $INSTALL_DIR | Out-Null
 }
 Copy-Item -Path $EXE_SRC -Destination $EXE_DEST -Force
-Write-Host "① server.exe をコピーしました → $EXE_DEST"
+Write-Host "1. Copied server.exe to $EXE_DEST"
 
-# ② 既存タスク削除
+# 2. Remove existing task
 if (Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TASK_NAME -Confirm:$false
 }
 
-# ③ タスクスケジューラに登録
+# 3. Register in Task Scheduler
 $action    = New-ScheduledTaskAction -Execute $EXE_DEST
 $trigger   = New-ScheduledTaskTrigger -AtLogOn
 $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0
@@ -37,21 +34,21 @@ Register-ScheduledTask `
     -Principal $principal `
     -Force | Out-Null
 
-Write-Host "② タスクスケジューラに登録しました"
+Write-Host "2. Registered in Task Scheduler"
 
-# ④ ファイアウォールで 8080 ポートを開放
+# 4. Open firewall port 8080
 netsh advfirewall firewall add rule `
     name="GakudoServer" `
     protocol=TCP `
     dir=in `
     localport=8080 `
     action=allow | Out-Null
-Write-Host "③ ファイアウォールでポート 8080 を開放しました"
+Write-Host "3. Opened firewall port 8080"
 
-# ⑤ 今すぐ起動
+# 5. Start now
 Start-ScheduledTask -TaskName $TASK_NAME
-Write-Host "④ サーバーを起動しました"
+Write-Host "4. Server started"
 
 Write-Host ""
-Write-Host "=== インストール完了！ ===" -ForegroundColor Green
-Write-Host "ブラウザで http://localhost:8080 を開いて確認してください。"
+Write-Host "=== Install complete! ===" -ForegroundColor Green
+Write-Host "Open http://localhost:8080 in your browser to confirm."
