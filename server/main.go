@@ -1,112 +1,307 @@
 package main
 
-// このファイルはメインプログラム。Go では必ず書く。
-
 import (
-	// 使う道具を宣言する（Python の import、JS の require と同じ）
-	"fmt"      // 文字を表示する道具
-	"log"      // ログを出す道具
-	"net/http" // HTTP サーバーを作る道具
-	"sync"     // 並列処理を安全にする道具
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+	"time"
 
-	"github.com/gorilla/websocket" // WebSocket の道具（go get で追加したやつ）
+	"github.com/gorilla/websocket"
 )
 
-// Client は子どもPC 1台分の情報をまとめた箱（struct）
-// struct = 関連するデータをセットで持つ入れ物
+// ── メッセージ形式 ──────────────────────────────────────────
+// サーバー → エージェント
+//   {"type":"start",  "seconds":1800}   タイマー開始
+//   {"type":"pause"}                    一時停止
+//   {"type":"resume", "seconds":950}    再開（残り秒数を指定）
+//
+// エージェント → サーバー
+//   {"type":"tick",   "remaining":1799} 毎秒の残り時間報告
+//   {"type":"paused", "remaining":950}  一時停止完了の報告
+//   {"type":"done"}                     タイマー終了の報告
+
+type Message struct {
+	Type      string `json:"type"`
+	Seconds   int    `json:"seconds,omitempty"`   // サーバー→エージェント用
+	Remaining int    `json:"remaining,omitempty"` // エージェント→サーバー用
+}
+
+// ── Client ──────────────────────────────────────────────────
+// 子どもPC 1台分の接続情報
 type Client struct {
-	name string           // PC の名前（例："pc-1"）
-	conn *websocket.Conn  // その PC との通信回線
+	name      string
+	conn      *websocket.Conn
+	mu        sync.Mutex // WriteMessage を複数 goroutine から安全に呼ぶための鍵
+	remaining int        // 現在の残り秒数（tick で更新される）
 }
 
-// Hub は接続中の全 PC を管理する受付
-// map は辞書みたいなもの → "pc-1": Client, "pc-2": Client ...
+// send はスレッドセーフに WebSocket へメッセージを送る
+func (c *Client) send(msg Message) error {
+	data, _ := json.Marshal(msg)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn.WriteMessage(websocket.TextMessage, data)
+}
+
+// ── Hub ──────────────────────────────────────────────────────
+// 全 PC の接続・一時停止データを管理する中心部
 type Hub struct {
-	mu      sync.Mutex          // 鍵。複数PCが同時に接続してきたとき辞書が壊れないようにする
-	clients map[string]*Client  // PC名 → Client の対応表
+	mu        sync.Mutex
+	clients   map[string]*Client // 接続中の PC
+	paused    map[string]int     // 一時停止中の PC → 残り秒数
+	lastReset time.Time          // 最後にリセットした日付（0時リセット判定に使う）
 }
 
-// Hub を新しく作って返す関数
 func newHub() *Hub {
 	return &Hub{
-		clients: make(map[string]*Client), // 空の辞書を用意
+		clients:   make(map[string]*Client),
+		paused:    make(map[string]int),
+		lastReset: time.Now(),
 	}
 }
 
-// register = PC が接続してきたとき、辞書に追加する（出席簿に名前を書くイメージ）
-func (h *Hub) register(client *Client) {
-	h.mu.Lock()         // 鍵をかける（他の処理が辞書を触れないようにする）
-	defer h.mu.Unlock() // この関数が終わったら鍵を外す（defer = 後で実行）
+// checkAndReset は日付が変わっていたら一時停止データをリセットする
+// スタッフが画面を開くたびに呼ぶ（0時以降に画面を開いた瞬間にリセット）
+func (h *Hub) checkAndReset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
+	now := time.Now()
+	// 日付（年・月・日）が変わっていたらリセット
+	lastY, lastM, lastD := h.lastReset.Date()
+	nowY, nowM, nowD := now.Date()
+	if nowY != lastY || nowM != lastM || nowD != lastD {
+		h.paused = make(map[string]int)
+		h.lastReset = now
+		log.Println("日付変更を検知: 一時停止データをリセットしました")
+	}
+}
+
+func (h *Hub) register(client *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.clients[client.name] = client
 	log.Printf("[接続] %s (現在 %d 台接続中)", client.name, len(h.clients))
 }
 
-// unregister = PC が切断したとき、辞書から削除する
 func (h *Hub) unregister(name string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-
 	delete(h.clients, name)
 	log.Printf("[切断] %s (現在 %d 台接続中)", name, len(h.clients))
 }
 
-// upgrader = HTTP 接続を WebSocket に切り替えるための道具
+// ── WebSocket ハンドラー ──────────────────────────────────────
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true }, // 開発中は全オリジンを許可
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// wsHandler = /ws にアクセスが来たときに呼ばれる関数（接続の窓口）
-// 流れ: 接続 → 名前を聞く → 登録 → メッセージを待ち続ける → 切断したら削除
 func (h *Hub) wsHandler(w http.ResponseWriter, r *http.Request) {
-
-	// ① HTTP 接続を WebSocket に切り替える
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("WebSocket アップグレード失敗:", err)
 		return
 	}
 
-	// ② 最初のメッセージで PC 名を受け取る（エージェントが「pc-1 です」と送ってくる）
+	// 最初のメッセージで PC 名を受け取る
 	_, msg, err := conn.ReadMessage()
 	if err != nil {
-		log.Println("PC 名受信失敗:", err)
 		conn.Close()
 		return
 	}
-	pcName := string(msg) // バイト列を文字列に変換（例: "pc-1"）
+	pcName := string(msg)
 
-	// ③ Client を作って Hub に登録する
 	client := &Client{name: pcName, conn: conn}
 	h.register(client)
-
-	// この関数が終わるとき（＝切断時）に自動で後片付けする
 	defer func() {
 		h.unregister(pcName)
 		conn.Close()
 	}()
 
-	// ④ メッセージを待ち続けるループ（切断されたら err が出てループを抜ける）
+	// エージェントからのメッセージを受け取るループ
 	for {
-		_, msg, err := conn.ReadMessage()
+		_, data, err := conn.ReadMessage()
 		if err != nil {
-			break // 切断 → ループを抜ける → defer の後片付けが走る
+			break
 		}
-		log.Printf("[%s] %s", pcName, string(msg))
+
+		var m Message
+		if err := json.Unmarshal(data, &m); err != nil {
+			continue
+		}
+
+		switch m.Type {
+		case "tick":
+			// エージェントからの毎秒報告 → クライアントの残り時間を更新
+			h.mu.Lock()
+			client.remaining = m.Remaining
+			h.mu.Unlock()
+
+		case "done":
+			// タイマー終了 → 一時停止データを消す
+			log.Printf("[%s] タイマー終了", pcName)
+			h.mu.Lock()
+			delete(h.paused, pcName)
+			client.remaining = 0
+			h.mu.Unlock()
+
+		case "paused":
+			// 一時停止完了 → 残り時間を保存
+			log.Printf("[%s] 一時停止: 残り %d 秒", pcName, m.Remaining)
+			h.mu.Lock()
+			h.paused[pcName] = m.Remaining
+			client.remaining = 0
+			h.mu.Unlock()
+		}
 	}
 }
 
-// main = プログラムが起動したときに最初に呼ばれる関数。ここから全部始まる。
-func main() {
-	hub := newHub() // Hub（受付）を作る
+// ── HTTP API ─────────────────────────────────────────────────
 
-	// URL ごとに呼ぶ関数を登録する
-	http.HandleFunc("/ws", hub.wsHandler) // /ws → WebSocket の窓口
+// POST /api/timer/start  {"pc":"pc-1","minutes":30}
+func (h *Hub) handleStart(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PC      string `json:"pc"`
+		Minutes int    `json:"minutes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "リクエスト形式が不正です", 400)
+		return
+	}
+
+	h.mu.Lock()
+	client, ok := h.clients[req.PC]
+	h.mu.Unlock()
+
+	if !ok {
+		http.Error(w, "PC が接続されていません", 404)
+		return
+	}
+
+	if err := client.send(Message{Type: "start", Seconds: req.Minutes * 60}); err != nil {
+		http.Error(w, "送信失敗", 500)
+		return
+	}
+	log.Printf("[%s] タイマー開始: %d 分", req.PC, req.Minutes)
+	fmt.Fprintln(w, "OK")
+}
+
+// POST /api/timer/pause  {"pc":"pc-1"}
+func (h *Hub) handlePause(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PC string `json:"pc"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "リクエスト形式が不正です", 400)
+		return
+	}
+
+	h.mu.Lock()
+	client, ok := h.clients[req.PC]
+	h.mu.Unlock()
+
+	if !ok {
+		http.Error(w, "PC が接続されていません", 404)
+		return
+	}
+
+	client.send(Message{Type: "pause"})
+	fmt.Fprintln(w, "OK")
+}
+
+// POST /api/timer/resume  {"pc":"pc-1"}
+func (h *Hub) handleResume(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PC string `json:"pc"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "リクエスト形式が不正です", 400)
+		return
+	}
+
+	h.mu.Lock()
+	client, ok := h.clients[req.PC]
+	remaining, hasPaused := h.paused[req.PC]
+	h.mu.Unlock()
+
+	if !ok {
+		http.Error(w, "PC が接続されていません", 404)
+		return
+	}
+	if !hasPaused {
+		http.Error(w, "一時停止中のタイマーがありません", 404)
+		return
+	}
+
+	client.send(Message{Type: "resume", Seconds: remaining})
+
+	h.mu.Lock()
+	delete(h.paused, req.PC) // 保存データを消す（再開したので）
+	h.mu.Unlock()
+
+	log.Printf("[%s] タイマー再開: 残り %d 秒", req.PC, remaining)
+	fmt.Fprintln(w, "OK")
+}
+
+// GET /api/status  → 全 PC の状態を返す
+func (h *Hub) handleStatus(w http.ResponseWriter, r *http.Request) {
+	h.checkAndReset() // 日付変更チェック（画面を開くたびに呼ばれる）
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	type PCStatus struct {
+		Name      string `json:"name"`
+		Connected bool   `json:"connected"`
+		Remaining int    `json:"remaining"` // カウント中の残り秒数
+		Paused    bool   `json:"paused"`
+		PausedAt  int    `json:"pausedAt"` // 一時停止時の残り秒数
+	}
+
+	status := []PCStatus{}
+
+	// 接続中の PC
+	for name, c := range h.clients {
+		pausedAt, paused := h.paused[name]
+		status = append(status, PCStatus{
+			Name:      name,
+			Connected: true,
+			Remaining: c.remaining,
+			Paused:    paused,
+			PausedAt:  pausedAt,
+		})
+	}
+
+	// 一時停止中だが今は切断している PC
+	for name, pausedAt := range h.paused {
+		if _, connected := h.clients[name]; !connected {
+			status = append(status, PCStatus{
+				Name:     name,
+				Paused:   true,
+				PausedAt: pausedAt,
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
+}
+
+// ── main ─────────────────────────────────────────────────────
+func main() {
+	hub := newHub()
+
+	http.HandleFunc("/ws", hub.wsHandler)
+	http.HandleFunc("/api/timer/start", hub.handleStart)
+	http.HandleFunc("/api/timer/pause", hub.handlePause)
+	http.HandleFunc("/api/timer/resume", hub.handleResume)
+	http.HandleFunc("/api/status", hub.handleStatus)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "管理サーバー 稼働中") // / → 動作確認用
+		fmt.Fprintln(w, "管理サーバー 稼働中")
 	})
 
-	// 8080番ポートで待ち始める（ここで止まってずっと接続を待ち続ける）
 	addr := ":8080"
 	log.Println("サーバー起動:", addr)
 	log.Fatal(http.ListenAndServe(addr, nil))

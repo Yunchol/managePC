@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -X POST http://localhost:8080/api/timer/start -H 'Content-Type: application/json' -d '{\"pc\":\"pc-1\",\"minutes\":1}')",
+      "Bash(curl -s http://localhost:8080/api/status)",
+      "Read(//private/tmp/**)"
+    ]
+  }
+}
