@@ -361,6 +361,14 @@
 
   function render(pcs) {
     const grid = document.getElementById('grid');
+
+    // 再描画前に入力値とフォーカスを保存
+    const savedValues = {};
+    grid.querySelectorAll('input[id^="t-"]').forEach(el => {
+      savedValues[el.id] = el.value;
+    });
+    const focusedId = document.activeElement?.id;
+
     if (!pcs.length) {
       grid.innerHTML = `<div class="empty-state"><div class="icon">🖥️</div><p>接続中の PC を待っています…</p></div>`;
       return;
@@ -369,17 +377,17 @@
     grid.innerHTML = pcs.map(pc => {
       const online = pc.connected;
 
-      // カード状態
+      // カード状態（ブロック中は running より優先して赤を出す）
       let cls = '';
-      if (!online)           cls = 'offline';
-      else if (pc.remaining > 0) cls = 'running';
-      else if (pc.paused)    cls = 'paused';
-      else if (pc.blocked)   cls = 'blocked';
+      if (!online)                cls = 'offline';
+      else if (pc.blocked)        cls = 'blocked';
+      else if (pc.remaining > 0)  cls = 'running';
+      else if (pc.paused)         cls = 'paused';
 
       // タグ
       const tags = [
-        pc.blocked ? `<span class="tag tag-blocked">🔒 ブロック</span>` : '',
-        pc.paused  ? `<span class="tag tag-paused">⏸ 一時停止</span>`   : '',
+        pc.blocked ? `<span class="tag tag-blocked">⛔ 強制終了中</span>` : '',
+        pc.paused  ? `<span class="tag tag-paused">⏸ 一時停止</span>`    : '',
       ].join('');
 
       // タイマー表示
@@ -412,8 +420,8 @@
         ? `<button class="btn-act a-resume" onclick="api('/api/timer/resume','${pc.name}')">▶ 再開</button>` : '';
       const block  = online
         ? (pc.blocked
-          ? `<button class="btn-act a-unblock" onclick="api('/api/block/stop',  '${pc.name}')">🔓 解除</button>`
-          : `<button class="btn-act a-block"   onclick="api('/api/block/start', '${pc.name}')">🔒 ブロック</button>`)
+          ? `<button class="btn-act a-unblock" onclick="api('/api/block/stop',  '${pc.name}')">🔓 強制終了解除</button>`
+          : `<button class="btn-act a-block"   onclick="api('/api/block/start', '${pc.name}')">⛔ 強制終了</button>`)
         : '';
       const reset  = `<button class="btn-act a-reset" onclick="api('/api/timer/reset','${pc.name}')">🔄 リセット</button>`;
 
@@ -431,23 +439,54 @@
         <div class="actions">${pause}${resume}${block}${reset}</div>
       </div>`;
     }).join('');
+
+    // 入力値とフォーカスを復元
+    Object.entries(savedValues).forEach(([id, val]) => {
+      const el = document.getElementById(id);
+      if (el) el.value = val;
+    });
+    if (focusedId) {
+      const el = document.getElementById(focusedId);
+      if (el) el.focus();
+    }
+  }
+
+  let busy = false;
+
+  function lockButtons() {
+    document.querySelectorAll('button').forEach(b => b.disabled = true);
   }
 
   async function api(url, pc) {
-    await fetch(url, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({pc})
-    });
-    refresh();
+    if (busy) return;
+    busy = true;
+    lockButtons();
+    try {
+      await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({pc})
+      });
+      await refresh();
+    } finally {
+      busy = false;
+    }
   }
 
-  function go(pc, min) {
-    fetch('/api/timer/start', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({pc, minutes: min})
-    }).then(refresh);
+  async function go(pc, min) {
+    if (busy) return;
+    busy = true;
+    lockButtons();
+    try {
+      await fetch('/api/timer/start', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({pc, minutes: min})
+      });
+      await refresh();
+    } finally {
+      busy = false;
+    }
   }
 
   function goCustom(pc) {
