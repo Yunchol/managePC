@@ -1,8 +1,25 @@
 # 実機テストメモ
 
+## 進捗サマリー（2026/04/30 時点）
+
+### 完了したこと
+- [x] スタッフPCに server.exe をインストール（`C:\gakudo_server\server.exe`）
+- [x] スタッフPCの IP を固定（192.168.0.119）
+- [x] 子どもPC（pc-1）に agent.exe をインストール（`C:\gakudo`）
+- [x] 管理画面（http://localhost:8080）で pc-1 の接続を確認
+- [x] 警告をトースト通知に変更（ゲームが止まらない）
+- [x] PowerShell ウィンドウを非表示に（ターミナルが出なくなった）
+- [x] 管理画面 UI を最新版に更新
+
+### 残っている作業
+- [ ] 子どもPC（pc-2〜pc-6）へのエージェントインストール
+- [ ] 全テスト項目の動作確認（下記）
+
+---
+
 ## 基本動作
 - [ ] タイマー開始 → カウントダウンが管理画面で見える
-- [ ] 残り5分・1分で子どもPCに警告が出る
+- [ ] 残り5分・1分で子どもPCにトースト通知が出る
 - [ ] 時間切れで子どもPCのアプリが強制終了される
 - [ ] 一時停止 → 再開ができる
 - [ ] リセットが動く
@@ -18,24 +35,27 @@
 - [ ] スタッフPCを再起動したらサーバーが自動起動する
 - [ ] スタッフPCが再起動してもタイマーが再開する（再接続後）
 
-## 改善要望
-- [ ] 残り5分・1分の警告がダイアログ（OKボタン）でゲームが中断される → トースト通知に変えたい
-- [ ] 警告のたびにターミナル（コンソール）が一瞬起動して操作の邪魔になる → 非表示にしたい
-
 ## 実際の使用シナリオ
 - [ ] タイマー中に子どもがPCを強制再起動してもブロックが継続する
 - [ ] 複数PC同時にタイマーを動かす
 - [ ] 強制終了中に子どもがアプリを起動しようとしても1秒で閉じられる
 
+---
 
+## よく使うコマンド
 
-cd "ぱす”
-そこで下のコマンド
+**子どもPC（agent インストール）**
+```
+cd "C:\Users\USER\Downloads\managePC-main\managePC-main\agent"
 powershell -ExecutionPolicy Bypass -File .\install.ps1
-スタッフPCなら
+```
 
+**スタッフPC（server インストール）**
+```
+cd "C:\Users\USER\Downloads\managePC-main\managePC-main\server"
 powershell -ExecutionPolicy Bypass -File .\install_server.ps1
+```
 
-C:\gakudo\agent.exe
-
-C:\gakudo_server\server.exe
+**手動起動（緊急用）**
+- スタッフPC: `C:\gakudo_server\server.exe`
+- 子どもPC: `C:\gakudo\agent.exe`
