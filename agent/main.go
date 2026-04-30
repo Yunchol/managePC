@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"runtime"
 	"sync"
 	"time"
@@ -245,28 +244,29 @@ func killAllUIApps() {
 	if runtime.GOOS == "windows" {
 		pid := os.Getpid()
 		script := fmt.Sprintf(
-			// MainWindowHandle が 0 でない = 画面に窓があるアプリだけ対象
-			// 自分自身（エージェント）の PID は除外
 			`Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Id -ne %d } | Stop-Process -Force`,
 			pid,
 		)
-		if err := exec.Command("powershell", "-Command", script).Run(); err != nil {
+		if err := newPSCmd("-WindowStyle", "Hidden", "-NonInteractive", "-Command", script).Run(); err != nil {
 			log.Println("アプリ終了エラー:", err)
 		}
 	} else {
-		// 開発中（Mac）はログに出すだけ
 		log.Println("[開発中] 全UIアプリを終了します（実際の kill はスキップ）")
 	}
 }
 
-// showWarning は警告ダイアログを表示する
+// showWarning は右下にトースト通知を表示する（ゲームを中断しない）
 func showWarning(message string) {
 	if runtime.GOOS == "windows" {
-		script := fmt.Sprintf(
-			`Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('%s','時間のお知らせ')`,
-			message,
-		)
-		exec.Command("powershell", "-Command", script).Start()
+		script := fmt.Sprintf(`
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
+$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$t.GetElementsByTagName('text')[0].AppendChild($t.CreateTextNode('Time Notice')) | Out-Null
+$t.GetElementsByTagName('text')[1].AppendChild($t.CreateTextNode('%s')) | Out-Null
+$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($t))
+`, message)
+		newPSCmd("-WindowStyle", "Hidden", "-NonInteractive", "-Command", script).Start()
 	} else {
 		log.Println("警告:", message)
 	}
