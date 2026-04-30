@@ -39,7 +39,7 @@ if (Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue) {
 # 4. Register in Task Scheduler (auto-start at logon, hidden)
 $action    = New-ScheduledTaskAction -Execute $EXE_DEST
 $trigger   = New-ScheduledTaskTrigger -AtLogOn
-$settings  = New-ScheduledTaskSettingsSet -Hidden $true -ExecutionTimeLimit 0
+$settings  = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit 0
 $principal = New-ScheduledTaskPrincipal -UserId (whoami) -LogonType Interactive -RunLevel Highest
 
 Register-ScheduledTask `
