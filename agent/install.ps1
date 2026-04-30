@@ -3,7 +3,7 @@
 
 # ===== SETTINGS (change per PC) =====
 $PC_NAME   = "pc-1"          # PC name: pc-1, pc-2, pc-3 ...
-$SERVER_IP = "192.168.0.104" # Staff PC's IP address
+$SERVER_IP = "192.168.0.119" # Staff PC's IP address
 # ====================================
 
 $SERVER_URL  = "ws://${SERVER_IP}:8080/ws"
