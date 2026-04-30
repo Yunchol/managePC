@@ -244,7 +244,7 @@ func killAllUIApps() {
 	if runtime.GOOS == "windows" {
 		pid := os.Getpid()
 		script := fmt.Sprintf(
-			`Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Id -ne %d } | Stop-Process -Force`,
+			`Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Id -ne %d -and $_.Name -ne 'explorer' } | Stop-Process -Force`,
 			pid,
 		)
 		if err := newPSCmd("-WindowStyle", "Hidden", "-NonInteractive", "-Command", script).Run(); err != nil {
