@@ -159,10 +159,10 @@ func startTimer(seconds int, send func(Message)) {
 				send(Message{Type: "tick", Remaining: remaining})
 
 				if remaining == 5*60 {
-					showWarning("残り5分です！")
+					showWarning("⏰ あと5分！", "ゲームの時間がもうすぐ終わるよ")
 				}
 				if remaining == 60 {
-					showWarning("残り1分です！")
+					showWarning("⚠️ あと1分！", "終わりの準備をしてね")
 				}
 
 				if remaining <= 0 {
@@ -256,19 +256,19 @@ func killAllUIApps() {
 }
 
 // showWarning は右下にトースト通知を表示する（ゲームを中断しない）
-func showWarning(message string) {
+func showWarning(title, body string) {
 	if runtime.GOOS == "windows" {
 		script := fmt.Sprintf(`
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
 $t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-$t.GetElementsByTagName('text')[0].AppendChild($t.CreateTextNode('Time Notice')) | Out-Null
+$t.GetElementsByTagName('text')[0].AppendChild($t.CreateTextNode('%s')) | Out-Null
 $t.GetElementsByTagName('text')[1].AppendChild($t.CreateTextNode('%s')) | Out-Null
 $app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($t))
-`, message)
+`, title, body)
 		newPSCmd("-WindowStyle", "Hidden", "-NonInteractive", "-Command", script).Start()
 	} else {
-		log.Println("警告:", message)
+		log.Println("警告:", title, body)
 	}
 }
 
