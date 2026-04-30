@@ -32,6 +32,9 @@
 cd "ぱす”
 そこで下のコマンド
 powershell -ExecutionPolicy Bypass -File .\install.ps1
+スタッフPCなら
+
+powershell -ExecutionPolicy Bypass -File .\install_server.ps1
 
 C:\gakudo\agent.exe
 
