@@ -20,9 +20,8 @@ if (Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TASK_NAME -Confirm:$false
 }
 
-# 3. Register in Task Scheduler (PowerShell hides the console window)
-$psArgs  = "-WindowStyle Hidden -NonInteractive -Command `"Start-Process '$EXE_DEST' -WindowStyle Hidden`""
-$action    = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $psArgs
+# 3. Register in Task Scheduler
+$action    = New-ScheduledTaskAction -Execute $EXE_DEST
 $trigger   = New-ScheduledTaskTrigger -AtLogOn
 $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0
 $principal = New-ScheduledTaskPrincipal -UserId (whoami) -LogonType Interactive -RunLevel Highest
