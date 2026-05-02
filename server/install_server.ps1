@@ -2,28 +2,32 @@
 
 $INSTALL_DIR = "C:\gakudo_server"
 $EXE_NAME    = "server.exe"
+$VBS_NAME    = "start_server.vbs"
 $TASK_NAME   = "GakudoServer"
 $EXE_SRC     = Join-Path $PSScriptRoot $EXE_NAME
+$VBS_SRC     = Join-Path $PSScriptRoot $VBS_NAME
 $EXE_DEST    = Join-Path $INSTALL_DIR  $EXE_NAME
+$VBS_DEST    = Join-Path $INSTALL_DIR  $VBS_NAME
 
 Write-Host "=== Installing Server ===" -ForegroundColor Cyan
 
-# 1. Create folder and copy exe
+# 1. Create folder and copy files
 if (-not (Test-Path $INSTALL_DIR)) {
     New-Item -ItemType Directory -Path $INSTALL_DIR | Out-Null
 }
 Copy-Item -Path $EXE_SRC -Destination $EXE_DEST -Force
-Write-Host "1. Copied server.exe to $EXE_DEST"
+Copy-Item -Path $VBS_SRC -Destination $VBS_DEST -Force
+Write-Host "1. Copied files to $INSTALL_DIR"
 
 # 2. Remove existing task
 if (Get-ScheduledTask -TaskName $TASK_NAME -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TASK_NAME -Confirm:$false
 }
 
-# 3. Register in Task Scheduler
-$action    = New-ScheduledTaskAction -Execute $EXE_DEST
+# 3. Register in Task Scheduler (via VBS to hide console window)
+$action    = New-ScheduledTaskAction -Execute "wscript.exe" -Argument $VBS_DEST
 $trigger   = New-ScheduledTaskTrigger -AtLogOn
-$settings  = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit 0
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0
 $principal = New-ScheduledTaskPrincipal -UserId (whoami) -LogonType Interactive -RunLevel Highest
 
 Register-ScheduledTask `

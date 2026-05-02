@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -439,13 +438,6 @@ func getLANIP() string {
 
 // ── main ─────────────────────────────────────────────────────
 func main() {
-	// ログをファイルに書き出す（コンソールウィンドウなしで動くため）
-	logFile, err := os.OpenFile(`C:\gakudo_server\server.log`, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err == nil {
-		log.SetOutput(logFile)
-		defer logFile.Close()
-	}
-
 	hub := newHub()
 	ip := getLANIP()
 	serverURL := fmt.Sprintf("http://%s:8080", ip)
