@@ -428,7 +428,7 @@ func getLANIP() string {
 	}
 	for _, addr := range addrs {
 		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ip4 := ipnet.IP.To4(); ip4 != nil {
+			if ip4 := ipnet.IP.To4(); ip4 != nil && !ipnet.IP.IsLinkLocalUnicast() {
 				return ip4.String()
 			}
 		}
